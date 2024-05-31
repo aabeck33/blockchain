@@ -1,0 +1,204 @@
+- name: Blockchain Installation - HyperLedger Fabric
+  hosts: blockchain
+  remote_user: root
+  tasks:
+  - name: Create user fabric
+    ansible.builtin.user:
+      name: fabric
+      comment: Blockchain user -> fabric
+      uid: 1033
+      shell: /bin/bash
+      groups: adm,sudo
+      append: yes
+      password: "$6$rSNZasLNExz7J2lG$ETM3txdrWMCfoKqC07YaimWmRDlkQhguvZtisaJkeCXpluUi6/s/DgbpGtw5Lwk5EbpmtsyIBg6y8Ywl94Tuu/"
+
+  - name: Allow PubkeyAuthentication via SSH
+    ansible.builtin.lineinfile:
+      path: /etc/ssh/sshd_config
+      search_string: '#PubkeyAuthentication yes'
+      line: PubkeyAuthentication yes
+
+  - name: Restart service ssh
+    ansible.builtin.service:
+      name: ssh
+      state: restarted
+    become: yes
+    become_user: root
+
+  - name: Install Docker PreReqs and General Tools
+    ansible.builtin.apt:
+      name: ca-certificates, git, curl, gnupg, lsb-release, locate, byobu, net-tools
+      state: present
+      update_cache: yes
+  
+  - name: Add Docker Repository Keys
+    ansible.builtin.apt_key:
+      url: https://download.docker.com/linux/ubuntu/gpg
+      state: present
+  
+  - name: Add a specified repository into sources list - Docker Repository
+    ansible.builtin.apt_repository:
+      repo: deb https://download.docker.com/linux/ubuntu bionic stable
+      state: present
+  
+  - name: Install Docker
+    ansible.builtin.apt:
+      name: docker-ce, docker-ce-cli, containerd.io, docker-compose, docker-compose-plugin
+      state: present
+      update_cache: yes
+  
+  - name: Add the user fabric into docker group
+    ansible.builtin.user:
+      name: fabric
+      groups: docker
+      state: present
+      append: yes
+
+#  - name: Reset ssh connection to allow user changes to affect 'current login user'
+#    ansible.builtin.meta: reset_connection
+
+  - name: Create a directory remote_tmp for root if it does not exist
+    ansible.builtin.file:
+      path: /root/.ansible/tmp
+      state: directory
+      mode: '0775'
+    become: yes
+    become_user: root
+
+  - name: Create a directory remote_tmp for fabric if it does not exist
+    ansible.builtin.file:
+      path: /home/fabric/.ansible/tmp
+      state: directory
+      mode: '0775'
+    vars:
+      remote_tmp: /root/.ansible/tmp
+    become: yes
+    become_user: fabric
+
+  - name: Install Golang, NodeJS, NPM and Python
+    ansible.builtin.apt:
+      name: golang-go, nodejs, npm, python3
+      state: present
+      update_cache: yes
+    become: yes
+
+  - name: Touch the file cleanfirewall.sh 
+    ansible.builtin.file:
+      path: /home/fabric/cleanfirewall.sh
+      state: touch
+      mode: '0744'
+    become: yes
+    become_user: fabric
+
+  - name: Include the content to the file cleanfirewall.sh
+    ansible.builtin.template:
+      src: ./cleanfirewall.sh
+      dest: /home/fabric/cleanfirewall.sh
+    become: yes
+    become_user: fabric
+
+  - name: Touch the file cleancontainer.sh
+    ansible.builtin.file:
+      path: /home/fabric/cleancontainer.sh
+      state: touch
+      mode: '0744'
+    become: yes
+    become_user: fabric
+
+  - name: Include the content to the file cleancontainer.sh
+    ansible.builtin.copy:
+      content: 'docker stop $(docker ps -a -q) && docker rm $(docker ps -a -q) && docker volume prune && docker system prune'
+      dest: /home/fabric/cleancontainer.sh
+    become: yes
+    become_user: fabric
+
+  - name: Download Fabric Samples, Binaries and Docker Images (Fabric)
+    ansible.builtin.get_url:
+      url: http://bit.ly/2ysbOFE
+      dest: /home/fabric
+      mode: '0540'
+    become: yes
+    become_user: fabric
+  
+  - name: Install Fabric Samples, Binaries and Docker Images
+    ansible.builtin.command:
+      cmd: /home/fabric/bootstrap.sh 2.2.9 1.5.5
+    args:
+      chdir: /home/fabric
+    become: yes
+    become_user: fabric
+    ignore_errors: yes
+
+  - name: Remove file bootstrap.sh
+    ansible.builtin.file:
+      path: /home/fabric/bootstrap.sh
+      state: absent
+
+  - name: Clone goledger-challenge project master branch
+    ansible.builtin.git:
+      repo: https://github.com/goledgerdev/goledger-challenge
+      dest: /home/fabric/goledger-challenge
+      single_branch: yes
+      version: master
+    become: yes
+    become_user: fabric
+
+  - name: Include path
+    ansible.builtin.copy:
+      content: 'export PATH=$PATH:/home/fabric/fabric-samples/bin'
+      dest: /home/fabric/.bashrc
+
+  - name: Vendor ChainCode fabric-samples
+    ansible.builtin.command:
+      cmd: go mod vendor
+    args:
+      chdir: /home/fabric/fabric-samples/chaincode/fabcar/go
+    become: yes
+    become_user: fabric
+    ignore_errors: yes
+
+  - name: Clone cc-tools-demo project master branch
+    ansible.builtin.git:
+      repo: https://github.com/goledgerdev/cc-tools-demo.git
+      dest: /home/fabric/cc-tools-demo
+      single_branch: yes
+      #version: master
+    become: yes
+    become_user: fabric
+
+  - name: Vendor ChainCode cc-tools-demo
+    ansible.builtin.command:
+      cmd: go mod vendor
+    args:
+      chdir: /home/fabric/cc-tools-demo/chaincode
+    become: yes
+    become_user: fabric
+    ignore_errors: yes
+
+  - name: Create Docker network cc-tools-demo-net
+    community.docker.docker_network:
+      name: cc-tools-demo-net
+    become: yes
+    become_user: fabric
+    ignore_errors: yes
+
+  - name: Vendor RestServer (1/2)
+    ansible.builtin.command:
+      cmd: rm -rf node_modules
+    args:
+      chdir: /home/fabric/cc-tools-demo/rest-server
+    become: yes
+    become_user: root
+    ignore_errors: yes
+
+  - name: Vendor RestServer (2/2)
+    ansible.builtin.command:
+      cmd: docker-compose -f docker-compose-npm-install.yaml up
+    args:
+      chdir: /home/fabric/cc-tools-demo/rest-server
+    become: yes
+    become_user: fabric
+    ignore_errors: yes
+  
+# ansible-playbook -i hosts playbook.ansible.yaml
+# ./network.sh up createChannel -ca -c mychannel -s couchdb

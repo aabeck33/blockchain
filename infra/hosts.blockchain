@@ -1,0 +1,6 @@
+[blockchain]
+174.138.79.119
+
+[blockchain:vars]
+ansible_ssh_private_key_file=../../infra/auth_fs/infra.pkw
+ansible_user=root
